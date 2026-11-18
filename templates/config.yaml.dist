@@ -1,0 +1,48 @@
+# config.yaml -- main settings of dbanondump.
+#
+#   cp config.yaml.dist config.yaml         (and the same for columns.yaml.dist / functions.yaml.dist)
+#   dbanondump validate -c config.yaml      # offline lint of the three files
+#   dbanondump check    -c config.yaml      # validate against the real structure, list unreviewed columns
+#   dbanondump run      -c config.yaml      # extract, anonymise, write the dump
+#
+# Relative paths are resolved against the folder of this file.
+
+version: 1
+
+# One project = one engine. Patterns in columns.yaml are written in that engine's own SQL.
+engine: mysql               # mysql | mariadb | postgres
+
+# Where the data comes from. Use a READ-ONLY account, ideally on a replica: the tool only reads.
+# The password is NEVER written here: export it before running
+#     export DBANONDUMP_SOURCE_PASSWORD='...'
+source:
+  host: replica.internal
+  port: 3306                # default: 3306 (5432 for postgres)
+  user: readonly
+  database: myapp
+  # password_env: DBANONDUMP_SOURCE_PASSWORD   # name of the environment variable that holds the password
+  # container_host: host.docker.internal       # the source's host as seen from the temporary container
+  #                                            # (needed when the source runs on THIS machine)
+  # dump_file: ./prod.sql.gz                   # alternative: import an existing dump instead of connecting
+
+# The throwaway database where the data is anonymised. It is removed at the end, even on errors.
+temp:
+  image: mysql:8.0.32       # same major version as the source (default: the engine's usual image)
+  # database: anon_tmp
+  # tmpfs: true             # keep its data in RAM: faster, uses memory
+  # extra_args: ["--innodb-buffer-pool-size=2G"]
+
+# Where the dump is written. A ".gz" suffix compresses it.
+#   {date}     -> 2026-11-18
+#   {datetime} -> 20261118-153045
+output: output/dev-dump-{date}.sql.gz
+
+# Which tables to extract. A spec is a name, a glob (user_*) or * for all. Excludes always win.
+tables:
+  include: ["*"]
+  exclude: [mail_log, audit_*]
+
+# The other two files. Both are optional here: the defaults are the files below, next to this one
+# (columns.yaml must exist; functions.yaml is used only if it exists).
+columns: columns.yaml
+functions: functions.yaml

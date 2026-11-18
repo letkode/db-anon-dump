@@ -1,0 +1,11 @@
+app_user:
+  username: "user-{id}"
+  email: "user-{id}@example.test"
+  phone: "+56900{id}"
+  birthdate: "{make_date(EXTRACT(YEAR FROM birthdate)::int, 1, 1)}"
+  notes: "{NULL}"
+  bio: "{NULL}"
+  payload: "{NULL}"
+profile:
+  full_name: "Nombre {id}"
+  rut: "r{id}"

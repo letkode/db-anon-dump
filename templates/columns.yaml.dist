@@ -1,0 +1,78 @@
+# columns.yaml -- ONLY the columns to anonymise. Every other column of every table is copied AS IS.
+#
+# Layout:   table:
+#             column: "pattern"
+#
+# A pattern is text with SQL expressions between braces. What is outside the braces is literal; what is
+# inside is SQL of the engine declared in config.yaml.
+#
+#   "user-{id}@example.test"    ->  user-15@example.test
+#   "{NULL}"                    ->  NULL (a NOT NULL column gets '' / 0 / '{}' / false / 1970-01-01 by type)
+#   "{KEEP}"                    ->  reviewed, leave the column as it is (silences the audit)
+#
+# Rules applied automatically:
+#   * a NULL stays NULL
+#   * use {id} (or another NON-anonymised column) so the same data matches across tables and JOINs still work
+#   * UNIQUE text columns are handled for you (the table needs an `id` column)
+#   * an exact table entry wins over the "*" wildcard
+#   * a column that does not exist is an error, unless it is marked `optional: true`
+#
+# After changing this file:   dbanondump validate -c config.yaml   and   dbanondump check -c config.yaml
+# `check --strict` fails when a column that looks personal (JSON/text, or a name such as email/phone/rut)
+# has no pattern: add one, or mark it "{KEEP}".
+
+# "*" applies to EVERY extracted table that has a column with that name.
+"*":
+  ip_address: "192.0.2.{(id MOD 254) + 1}"      # TEST-NET-1: a documentation-only range
+
+user:
+  # --- identity -------------------------------------------------------------------------------------
+  username: "user-{id}"
+  firstname: "Nombre{id}"
+  lastname: "Apellido{id}"
+  email: "user-{id}@example.test"
+  phone: "+56900{LPAD(id MOD 1000000, 6, '0')}"
+  identification: "{fake_rut(20000000 + id)}"   # a valid-looking RUT, from functions.yaml
+  linkedin: "https://example.test/in/dev-user/{id}"
+  # --- sensitive data -------------------------------------------------------------------------------
+  birthdate: "{MAKEDATE(YEAR(birthdate), 1)}"   # 1 January of the same year: keeps the age, hides the day
+  gender: "{IF(id MOD 2 = 0, 'M', 'F')}"
+  # --- free text and JSON: drop them -----------------------------------------------------------------
+  brief: "{NULL}"
+  description: "{NULL}"
+  # --- files ------------------------------------------------------------------------------------------
+  video_cv: "dev/video-{id}.mp4"
+  # --- a column that only exists in some environments ----------------------------------------------
+  plain_password:
+    pattern: "{NULL}"
+    optional: true
+  # --- reviewed and intentionally left as it is ---------------------------------------------------
+  country: "{KEEP}"
+
+candidate:
+  # Same formula as `user` with the user id as key: candidate and user show the same person.
+  # Candidates without an account (user_id NULL) get a disjoint range (900000 + id).
+  firstname: "Nombre{COALESCE(user_id, 900000 + id)}"
+  lastname: "Apellido{COALESCE(user_id, 900000 + id)}"
+  email: "user-{COALESCE(user_id, 900000 + id)}@example.test"
+  identification: "{fake_rut(20000000 + COALESCE(user_id, 900000 + id))}"
+
+mail:
+  from_email: "mail-{id}@example.test"
+  to_email: "mail-{id}-to@example.test"
+  body_text: "{NULL}"
+  body_html: "{NULL}"
+
+# Free text that is worth keeping: instead of dropping it with {NULL}, mask only the e-mails and phone
+# numbers written inside it. Use a block scalar (`|-`) so backslashes are taken literally.
+# This catches common formats only (ordinary e-mails, Chilean mobile numbers); if the column is
+# sensitive, {NULL} is safer.
+article:                                          # any table with a free-text column
+  body: |-
+    {REGEXP_REPLACE(REGEXP_REPLACE(body, '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}', '[email removed]'), '(\\+?56)?[ ]?9[ ]?[0-9]{4}[ ]?[0-9]{4}', '[phone removed]')}
+
+# PostgreSQL uses its own SQL, for example:
+#   birthdate: "{make_date(EXTRACT(YEAR FROM birthdate)::int, 1, 1)}"
+#   phone: "+56900{LPAD((id % 1000000)::text, 6, '0')}"
+#   body: |-
+#     {regexp_replace(regexp_replace(body, '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}', '[email removed]', 'g'), '(\+?56)?[ ]?9[ ]?[0-9]{4}[ ]?[0-9]{4}', '[phone removed]', 'g')}

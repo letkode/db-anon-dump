@@ -1,0 +1,10 @@
+dist/
+output/
+*.sql.gz
+# local copies of the *.dist templates (they hold your own connection settings)
+/config.yaml
+/columns.yaml
+/functions.yaml
+
+# project-specific examples (LabLab config): kept out of the repository
+examples/

@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: make vet
+      - run: make test
+
+  e2e:
+    needs: unit
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [e2e-mysql, e2e-mariadb, e2e-postgres]
+    steps:
+      - uses: actions/checkout@v4
+      - run: make ${{ matrix.target }}

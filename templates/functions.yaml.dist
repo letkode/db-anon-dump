@@ -1,0 +1,43 @@
+# functions.yaml -- helper SQL functions that the patterns in columns.yaml may call. OPTIONAL: if your
+# patterns only use the engine's built-in functions, you do not need this file.
+#
+# * They are created in the TEMPORARY database only; they are not part of the dump.
+# * Each `sql` is ONE statement (no DELIMITER). The program runs `DROP FUNCTION IF EXISTS <name>`
+#   before creating it, so a re-run never fails because the function already exists.
+# * Order matters: define a function before the ones that call it.
+# * In PostgreSQL the DROP fails if the name has several overloads: use unique names.
+#
+# Used from columns.yaml like any SQL function:   identification: "{fake_rut(20000000 + id)}"
+
+# --- MySQL / MariaDB example: a Chilean RUT with a valid check digit (modulo 11) -----------------
+- name: fake_rut_dv
+  sql: |
+    CREATE FUNCTION fake_rut_dv(p_rut BIGINT) RETURNS CHAR(1) DETERMINISTIC NO SQL
+    BEGIN
+        DECLARE v_sum BIGINT DEFAULT 0;
+        DECLARE v_mul INT DEFAULT 2;
+        DECLARE v_n   BIGINT DEFAULT p_rut;
+        DECLARE v_dv  INT;
+
+        WHILE v_n > 0 DO
+            SET v_sum = v_sum + (v_n MOD 10) * v_mul;
+            SET v_n   = FLOOR(v_n / 10);
+            SET v_mul = IF(v_mul = 7, 2, v_mul + 1);
+        END WHILE;
+
+        SET v_dv = 11 - (v_sum MOD 11);
+        RETURN CASE v_dv WHEN 11 THEN '0' WHEN 10 THEN 'K' ELSE CAST(v_dv AS CHAR) END;
+    END
+
+- name: fake_rut
+  sql: |
+    CREATE FUNCTION fake_rut(p_rut BIGINT) RETURNS VARCHAR(12) DETERMINISTIC NO SQL
+    BEGIN
+        RETURN CONCAT(p_rut, '-', fake_rut_dv(p_rut));
+    END
+
+# --- PostgreSQL example (replace the two functions above with this one) -----------------------------
+# - name: fake_masked_email
+#   sql: |
+#     CREATE FUNCTION fake_masked_email(p_id BIGINT) RETURNS TEXT
+#     LANGUAGE sql IMMUTABLE AS $$ SELECT 'user-' || p_id || '@example.test' $$

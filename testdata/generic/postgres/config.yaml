@@ -1,0 +1,5 @@
+version: 1
+engine: postgres
+source: {host: __HOST__, port: __PORT__, user: postgres, database: fixtures, container_host: host.docker.internal}
+tables: {include: ["*"], exclude: [mail_log]}
+columns: columns.yaml
