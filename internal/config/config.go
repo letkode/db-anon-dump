@@ -75,6 +75,13 @@ type Temp struct {
 	ExtraArgs []string `yaml:"extra_args"`
 }
 
+// Logs configures the per-run log file. Dir is a pointer so that "not set" (default: logs/) can be told apart
+// from an explicit empty value (no log files).
+type Logs struct {
+	Dir  *string `yaml:"dir"`
+	Keep int     `yaml:"keep"` // newest log files to keep; 0 keeps all
+}
+
 type Tables struct {
 	Include []string `yaml:"include"`
 	Exclude []string `yaml:"exclude"`
@@ -88,6 +95,7 @@ type Config struct {
 	Temp      Temp   `yaml:"temp"`
 	Output    string `yaml:"output"`
 	Tables    Tables `yaml:"tables"`
+	Logs      Logs   `yaml:"logs"`
 	Columns   string `yaml:"columns"`   // path to columns.yaml (default: columns.yaml next to config.yaml)
 	Functions string `yaml:"functions"` // path to functions.yaml (default: functions.yaml next to config.yaml, optional)
 
@@ -177,6 +185,21 @@ func Load(path string) (*Config, error) {
 	return &c, nil
 }
 
+// DefaultLogDir is where the run logs go when logs.dir is not set.
+const DefaultLogDir = "logs"
+
+// LogDir is the folder for the run logs, resolved against the config file; "" means logging is disabled.
+func (c *Config) LogDir() string {
+	d := DefaultLogDir
+	if c.Logs.Dir != nil {
+		d = *c.Logs.Dir
+	}
+	if d == "" {
+		return ""
+	}
+	return c.Path(d)
+}
+
 // Path resolves a path from the config relative to the config file.
 func (c *Config) Path(p string) string {
 	if p == "" || filepath.IsAbs(p) {
@@ -213,6 +236,9 @@ func (c *Config) Validate() []error {
 	d, err := engine.Get(c.Engine)
 	if err != nil {
 		add("config: engine: %v", err)
+	}
+	if c.Logs.Keep < 0 {
+		add("config: logs: keep must be 0 (keep all) or a positive number (got %d)", c.Logs.Keep)
 	}
 	if c.Source.DumpFile == "" {
 		if c.Source.Host == "" || c.Source.User == "" || c.Source.Database == "" {

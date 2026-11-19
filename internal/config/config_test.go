@@ -176,3 +176,19 @@ func TestSelectTables(t *testing.T) {
 		t.Error("everything excluded must be an error")
 	}
 }
+
+func TestLogDir(t *testing.T) {
+	c := &Config{Dir: "/proj"}
+	if got := c.LogDir(); got != "/proj/logs" {
+		t.Errorf("default = %q", got)
+	}
+	custom, off := "var/log", ""
+	c.Logs.Dir = &custom
+	if got := c.LogDir(); got != "/proj/var/log" {
+		t.Errorf("custom = %q", got)
+	}
+	c.Logs.Dir = &off
+	if got := c.LogDir(); got != "" {
+		t.Errorf("an explicit empty dir disables the log, got %q", got)
+	}
+}

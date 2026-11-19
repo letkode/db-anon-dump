@@ -12,9 +12,11 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/letkode/db-anon-dump/internal/config"
 	"github.com/letkode/db-anon-dump/internal/pipeline"
+	"github.com/letkode/db-anon-dump/internal/runlog"
 	"github.com/letkode/db-anon-dump/internal/scaffold"
 )
 
@@ -23,7 +25,7 @@ var version = "dev" // set at build time: -ldflags "-X main.version=..."
 const usage = `dbanondump - extract tables into a throwaway database, anonymise them, write a dev dump
 
 Usage:
-  dbanondump init     [dir]     write starter config.yaml, columns.yaml and functions.yaml (default: .)
+  dbanondump init     [dir]     write starter config.yaml, columns.yaml, functions.yaml and .env (default: .)
   dbanondump run      [flags]   extract, anonymise and write the dump
   dbanondump check    [flags]   validate against the real structure and list personal-looking columns
                                 without a pattern (loads no data, writes nothing)
@@ -41,6 +43,8 @@ run / check flags:
   -x, --exclude LIST    comma-separated tables/globs to exclude (added to the config)
       --from-dump FILE  import this dump (.sql / .sql.gz) instead of reading the source
       --strict          exit 3 if a personal-looking column has no pattern
+      --log-dir DIR     folder for the run log (default: logs/ next to config.yaml, see logs: in config.yaml)
+      --no-log          do not write a run log
 
 run flags:
   -o, --output FILE     output dump; '.gz' compresses it; {date} / {datetime} are expanded
@@ -83,9 +87,9 @@ func run(args []string) int {
 	fs.SetOutput(os.Stderr)
 	fs.Usage = func() { fmt.Fprint(os.Stderr, usage) }
 	var (
-		cfgPath, tables, exclude, fromDump, output string
-		parallel                                   int
-		strict, keep                               bool
+		cfgPath, tables, exclude, fromDump, output, logDir string
+		parallel                                           int
+		strict, keep, noLog                                bool
 	)
 	for _, n := range []string{"c", "config"} {
 		fs.StringVar(&cfgPath, n, "config.yaml", "config file")
@@ -99,6 +103,8 @@ func run(args []string) int {
 		}
 		fs.StringVar(&fromDump, "from-dump", "", "dump file")
 		fs.BoolVar(&strict, "strict", false, "fail on unreviewed columns")
+		fs.StringVar(&logDir, "log-dir", "", "folder for the run log")
+		fs.BoolVar(&noLog, "no-log", false, "do not write a run log")
 	}
 	if cmd == "run" {
 		for _, n := range []string{"o", "output"} {
@@ -130,15 +136,43 @@ func run(args []string) int {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// run log: logs/<command>-<datetime>.log with everything printed here, the error and the durations
+	lg := logf
+	var rl *runlog.Log
+	dir := cfg.LogDir()
+	if logDir != "" {
+		dir = logDir
+	}
+	if !noLog && dir != "" {
+		var err error
+		rl, err = runlog.Open(dir, cmd, time.Now(), "dbanondump "+version+" "+cmd+" "+strings.Join(rest, " "))
+		if err != nil {
+			logf("warning: cannot write the run log in %s: %v (continuing without it)", dir, err)
+		} else {
+			rl.SetSecrets(func() []string { return []string{os.Getenv(cfg.Source.PasswordEnv)} })
+			if err := runlog.Prune(dir, cfg.Logs.Keep); err != nil {
+				logf("warning: cannot prune old logs in %s: %v", dir, err)
+			}
+			lg = func(format string, a ...any) { logf(format, a...); rl.Logf(format, a...) }
+		}
+	}
+
 	opts := pipeline.Options{
 		Tables: split(tables), Exclude: split(exclude), FromDump: fromDump, Output: output,
-		Parallel: parallel, Keep: keep, Strict: strict, CheckOnly: cmd == "check", Log: logf,
+		Parallel: parallel, Keep: keep, Strict: strict, CheckOnly: cmd == "check", Log: lg, Phase: rl.Phase,
 	}
-	if err := pipeline.Run(ctx, cfg, opts); err != nil {
-		logf("ERROR: %v", err)
-		return exitCode(err)
+	code := 0
+	runErr := pipeline.Run(ctx, cfg, opts)
+	if runErr != nil {
+		lg("ERROR: %v", runErr)
+		code = exitCode(runErr)
 	}
-	return 0
+	rl.Close(code, runErr)
+	if rl != nil {
+		logf("log: %s", rl.Path())
+	}
+	return code
 }
 
 // runInit writes the starter files. Usage: dbanondump init [--force] [dir]
@@ -163,7 +197,7 @@ func runInit(args []string) int {
 	for _, w := range written {
 		logf("created %s", w)
 	}
-	logf("next: edit them, export DBANONDUMP_SOURCE_PASSWORD, then run:")
+	logf("next: edit them, put the password in .env (DBANONDUMP_SOURCE_PASSWORD), then run:")
 	logf("  dbanondump validate -c %s", filepath.Join(dir, "config.yaml"))
 	logf("  dbanondump check    -c %s", filepath.Join(dir, "config.yaml"))
 	logf("  dbanondump run      -c %s", filepath.Join(dir, "config.yaml"))

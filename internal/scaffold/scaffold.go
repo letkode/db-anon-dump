@@ -9,7 +9,7 @@ import (
 	"github.com/letkode/db-anon-dump/templates"
 )
 
-// Write creates config.yaml, columns.yaml and functions.yaml in dir (created if needed) from the embedded
+// Write creates config.yaml, columns.yaml, functions.yaml and .env in dir (created if needed) from the embedded
 // templates. Without force it refuses to touch anything if any of the files already exists, so a partial
 // scaffold is never left behind. It returns the files it wrote.
 func Write(dir string, force bool) ([]string, error) {
@@ -34,7 +34,11 @@ func Write(dir string, force bool) ([]string, error) {
 			return written, err
 		}
 		path := filepath.Join(dir, name)
-		if err := os.WriteFile(path, body, 0o644); err != nil {
+		mode := os.FileMode(0o644)
+		if name == ".env" {
+			mode = 0o600 // holds the password
+		}
+		if err := os.WriteFile(path, body, mode); err != nil {
 			return written, err
 		}
 		written = append(written, path)

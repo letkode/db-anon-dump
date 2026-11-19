@@ -9,16 +9,19 @@ import (
 	"github.com/letkode/db-anon-dump/internal/config"
 )
 
-func TestWriteCreatesTheThreeFilesAndTheyAreValid(t *testing.T) {
+func TestWriteCreatesTheFilesAndTheyAreValid(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "new", "folder") // does not exist yet
 	written, err := Write(dir, false)
-	if err != nil || len(written) != 3 {
+	if err != nil || len(written) != 4 {
 		t.Fatalf("Write: %v %v", written, err)
 	}
-	for _, n := range []string{"config.yaml", "columns.yaml", "functions.yaml"} {
+	for _, n := range []string{"config.yaml", "columns.yaml", "functions.yaml", ".env"} {
 		if _, err := os.Stat(filepath.Join(dir, n)); err != nil {
 			t.Errorf("%s was not written", n)
 		}
+	}
+	if fi, err := os.Stat(filepath.Join(dir, ".env")); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Errorf(".env must be created with mode 0600: %v %v", fi, err)
 	}
 	// the starter files must load and validate as they are
 	c, err := config.Load(filepath.Join(dir, "config.yaml"))

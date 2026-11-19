@@ -3,10 +3,10 @@ package templates
 
 import "embed"
 
-// FS holds the three templates.
+// FS holds the templates.
 //
-//go:embed config.yaml.dist columns.yaml.dist functions.yaml.dist
+//go:embed config.yaml.dist columns.yaml.dist functions.yaml.dist .env.dist
 var FS embed.FS
 
 // Files are the names written by `init` (the template name without the ".dist" suffix).
-var Files = []string{"config.yaml", "columns.yaml", "functions.yaml"}
+var Files = []string{"config.yaml", "columns.yaml", "functions.yaml", ".env"}

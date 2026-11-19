@@ -108,6 +108,27 @@ expect_exit "the config is valid" 0 "$BIN" validate -c "$WORK/main/config.yaml"
 
 say "[$ENGINE] live source: structure -> pre-flight -> data -> anonymise -> dump"
 expect_exit "extract + anonymise from a live source" 0 "$BIN" run -c "$WORK/main/config.yaml" -o "$WORK/out.sql"
+
+say "[$ENGINE] the password is read from .env next to config.yaml (nothing exported)"
+mkdir -p "$WORK/dotenv"
+cp "$WORK/main/config.yaml" "$WORK/main/columns.yaml" "$WORK/dotenv/"
+printf "DBANONDUMP_SOURCE_PASSWORD='%s'\n" "$PW" > "$WORK/dotenv/.env"
+expect_exit "run with the password only in .env" 0 env -u DBANONDUMP_SOURCE_PASSWORD "$BIN" run -c "$WORK/dotenv/config.yaml" -o "$WORK/out-dotenv.sql"
+rm -f "$WORK/dotenv/.env"
+expect_exit "without .env and without the variable it is a usage error" 2 env -u DBANONDUMP_SOURCE_PASSWORD "$BIN" run -c "$WORK/dotenv/config.yaml" -o "$WORK/out-dotenv2.sql"
+
+say "[$ENGINE] run log: logs/<command>-<datetime>.log"
+LOGF="$(ls -t "$WORK"/main/logs/run-*.log 2>/dev/null | head -1)"
+if [[ -n "$LOGF" ]]; then pass "a run log was written in logs/ next to config.yaml"; else fail "no run log in $WORK/main/logs"; LOGF=/dev/null; fi
+grep -q 'result:   OK (exit 0)' "$LOGF" && grep -q '^duration: ' "$LOGF" && grep -q 'anonymise' "$LOGF" \
+    && pass "the log has the result, the total duration and the time per phase" || fail "the log misses the summary"
+grep -q "$PW" "$LOGF" && fail "the password is in the log" || pass "the password is not in the log"
+[[ "$(stat -c %a "$LOGF" 2>/dev/null)" == 600 ]] && pass "the log is mode 600" || fail "the log is not mode 600"
+ERRF="$(ls -t "$WORK"/dotenv/logs/run-*.log 2>/dev/null | head -1)"
+grep -q 'result:   ERROR (exit 2)' "${ERRF:-/dev/null}" && grep -q 'ERROR:' "$ERRF" \
+    && pass "a failed run logs the error and the exit code" || fail "the failed run is not in its log"
+expect_exit "--no-log writes no log" 0 "$BIN" run -c "$WORK/main/config.yaml" -o "$WORK/out-nolog.sql" --no-log
+[[ "$(ls "$WORK"/main/logs/run-*.log | wc -l)" -eq 1 ]] && pass "--no-log left no new file" || fail "--no-log still wrote a log"
 OUT="$WORK/out.sql"
 if [[ -f "$OUT" ]]; then
     grep -q 'user-1@example.test' "$OUT"          && pass "dump contains the synthetic e-mail"       || fail "no synthetic e-mail"

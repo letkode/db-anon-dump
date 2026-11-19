@@ -17,6 +17,7 @@ import (
 
 	"github.com/letkode/db-anon-dump/internal/config"
 	"github.com/letkode/db-anon-dump/internal/engine"
+	"github.com/letkode/db-anon-dump/internal/envfile"
 	"github.com/letkode/db-anon-dump/internal/plan"
 	"github.com/letkode/db-anon-dump/internal/tempdb"
 )
@@ -54,6 +55,13 @@ type Options struct {
 	Strict    bool // abort when personal-looking columns have no pattern
 	CheckOnly bool // validate + audit only; no data is loaded, nothing is written
 	Log       func(format string, a ...any)
+	Phase     func(name string) // called when a phase starts (for the time per phase in the run log)
+}
+
+func (o *Options) phase(name string) {
+	if o.Phase != nil {
+		o.Phase(name)
+	}
 }
 
 func (o *Options) logf(format string, a ...any) {
@@ -111,9 +119,13 @@ func Run(ctx context.Context, cfg *config.Config, o Options) (err error) {
 	}
 	srcPassword := ""
 	if dumpFile == "" {
+		// .env, .env.local, .env.<APP_ENV>[.local] next to config.yaml; the real environment wins over them
+		if _, err := envfile.Apply(cfg.Dir); err != nil {
+			return fail(ExitUsage, "%v", err)
+		}
 		v, ok := os.LookupEnv(cfg.Source.PasswordEnv)
 		if !ok {
-			return fail(ExitUsage, "the source password must be in the %s environment variable", cfg.Source.PasswordEnv)
+			return fail(ExitUsage, "the source password must be in the %s environment variable (or in a .env file in %s)", cfg.Source.PasswordEnv, cfg.Dir)
 		}
 		srcPassword = v
 	} else if _, err := os.Stat(dumpFile); err != nil {
@@ -123,12 +135,14 @@ func Run(ctx context.Context, cfg *config.Config, o Options) (err error) {
 	if image == "" {
 		image = d.DefaultImage()
 	}
+	o.phase("temporary database")
 	o.logf("starting temporary %s (%s)", d.Name(), image)
 	c, err := tempdb.Start(ctx, d, image, cfg.Temp.Database, cfg.Temp.Tmpfs, cfg.Temp.ExtraArgs)
 	if err != nil {
 		return fail(ExitExtract, "%v", err)
 	}
 	defer func() {
+		o.phase("cleanup")
 		if o.Keep {
 			o.logf("container %q kept (it holds REAL data). Remove it with: docker rm -f -v %s", c.Name, c.Name)
 			return
@@ -144,6 +158,7 @@ func Run(ctx context.Context, cfg *config.Config, o Options) (err error) {
 
 	// ---- which tables, and the structure ------------------------------------------------------------
 	var tables []string
+	o.phase("structure")
 	if dumpFile != "" {
 		o.logf("importing the dump file (whole file; tables that are not requested are dropped): %s", dumpFile)
 		if err := importFile(ctx, c, dumpFile); err != nil {
@@ -183,6 +198,7 @@ func Run(ctx context.Context, cfg *config.Config, o Options) (err error) {
 	}
 	o.logf("tables to extract: %d", len(tables))
 
+	o.phase("pre-flight")
 	if len(cfg.Funcs) > 0 {
 		o.logf("creating %d helper function(s)", len(cfg.Funcs))
 		for _, f := range cfg.Funcs {
@@ -229,6 +245,7 @@ func Run(ctx context.Context, cfg *config.Config, o Options) (err error) {
 	}
 
 	// ---- data -------------------------------------------------------------------------------------------
+	o.phase("data extraction")
 	if dumpFile == "" {
 		o.logf("extracting the data of %d table(s)", len(tables))
 		if err := c.Pipe(ctx, d.SecretEnv(srcPassword),
@@ -242,6 +259,7 @@ func Run(ctx context.Context, cfg *config.Config, o Options) (err error) {
 	}
 
 	// ---- anonymise --------------------------------------------------------------------------------------
+	o.phase("anonymise")
 	par := o.Parallel
 	if par <= 0 {
 		par = min(4, runtime.NumCPU())
@@ -252,6 +270,7 @@ func Run(ctx context.Context, cfg *config.Config, o Options) (err error) {
 	}
 
 	// ---- dump -------------------------------------------------------------------------------------------
+	o.phase("dump")
 	out := cfg.OutputPath(o.Output, time.Now())
 	o.logf("writing the dump: %s", out)
 	if err := writeDump(ctx, c, out, tables); err != nil {

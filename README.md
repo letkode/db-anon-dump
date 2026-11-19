@@ -26,8 +26,8 @@ Solo vuelves a compilar si cambia el código del paquete. Cambiar los YAML nunca
 ## Uso
 
 ```bash
-export DBANONDUMP_SOURCE_PASSWORD='...'           # la clave NUNCA va en el archivo
-dbanondump init dump/                             # crea config.yaml, columns.yaml y functions.yaml de ejemplo
+dbanondump init dump/                             # crea config.yaml, columns.yaml, functions.yaml y .env de ejemplo
+$EDITOR dump/.env                                 # la clave va en .env (DBANONDUMP_SOURCE_PASSWORD), NUNCA en config.yaml
 dbanondump validate -c config.yaml                # lint offline de los 3 archivos: sin Docker ni base de datos
 dbanondump check    -c config.yaml                # valida contra la estructura real y audita
 dbanondump run      -c config.yaml                # extrae, anonimiza y escribe el dump
@@ -48,9 +48,70 @@ gunzip -c output/dev-dump.sql.gz | docker exec -i <mysql-container> mysql -uroot
 gunzip -c output/dev-dump.sql.gz | docker exec -i <pg-container> psql -U postgres -d <database>
 ```
 
-## Los tres archivos
+## La clave (`.env`)
 
-Un proyecto son tres YAML en una misma carpeta. Para crearlos con plantillas comentadas y con ejemplos, en
+La clave del origen **no** va en `config.yaml`. `dbanondump` la lee de los archivos `.env` que están en la misma
+carpeta que `config.yaml` (`init` crea el `.env` a partir de `templates/.env.dist`):
+
+```
+DBANONDUMP_SOURCE_PASSWORD='tu-clave'
+```
+
+Se leen en este orden y el último que defina una variable gana:
+
+| Archivo | Para qué |
+|---|---|
+| `.env` | valores base |
+| `.env.local` | tus cambios locales, sobre `.env` |
+| `.env.<APP_ENV>` | valores de un ambiente (`.env.dev`, `.env.staging`...) |
+| `.env.<APP_ENV>.local` | tus cambios locales de ese ambiente |
+
+- `APP_ENV` se toma del entorno real o, si no está, de `.env` / `.env.local`. Sin `APP_ENV` solo se leen `.env` y `.env.local`.
+- Una variable ya exportada en el entorno **gana siempre** sobre todos los archivos (útil en CI: se exporta y no hacen falta archivos).
+- Los archivos que no existen se ignoran. Con `source.dump_file` no se necesita clave.
+- El nombre de la variable se cambia con `source.password_env` en `config.yaml`.
+- Formato `CLAVE=valor`, comentarios `#`, comillas y `export` (lo interpreta [`joho/godotenv`](https://github.com/joho/godotenv)).
+  **Usa comillas simples** si la clave tiene `$`: sin comillas o con comillas dobles, `$` inicia una expansión de variable.
+- `.env`, `.env.local` y cualquier `.env.<algo>` están en `.gitignore` (excepto `.env.dist`): no los subas al repositorio.
+
+## Logs de ejecución
+
+Cada `run` y `check` escribe un archivo en `logs/<comando>-<fecha-hora>.log` (junto a `config.yaml`), por ejemplo
+`logs/run-20261119-153045.log`, con permisos 600:
+
+- las mismas líneas que salen por pantalla, cada una con su hora;
+- el error, si falla (con el código de salida);
+- un resumen final con el **resultado**, la **duración total** y el **tiempo de cada fase**
+  (base temporal, estructura, pre-flight, extracción de datos, anonimización, dump y limpieza), también cuando la ejecución falla.
+
+```
+---- summary ----
+command:  run
+result:   OK (exit 0)
+started:  2026-11-19 15:30:45
+duration: 3m12.4s
+phases:
+  temporary database     12.3s
+  structure              4.1s
+  ...
+```
+
+```yaml
+logs:            # opcional, en config.yaml
+  dir: logs      # relativo a config.yaml; "" = no guardar logs (por defecto: logs)
+  keep: 30       # conserva solo los 30 más nuevos (por defecto 0 = conserva todos)
+```
+
+Por línea de comandos: `--log-dir DIR` cambia la carpeta y `--no-log` no escribe log. `validate` e `init` no guardan log.
+
+- La clave del origen nunca se escribe en el log (se reemplaza por `***`), pero los errores de SQL pueden citar
+  fragmentos de datos reales: por eso el archivo es 600 y `logs/` está en `.gitignore`.
+- Los errores anteriores a leer `config.yaml` (archivo inexistente o inválido) solo salen por pantalla.
+- Si no se puede escribir el log (permisos, disco lleno) se avisa y la ejecución continúa.
+
+## Los archivos
+
+Un proyecto son tres YAML (más el `.env` con la clave) en una misma carpeta. Para crearlos con plantillas comentadas y con ejemplos, en
 la carpeta donde los vayas a usar:
 
 ```bash
@@ -59,7 +120,8 @@ dbanondump init dump/           # o en otra (se crea si no existe)
 dbanondump init --force dump/   # sobrescribe si ya existen
 ```
 
-`init` se niega a tocar nada si alguno de los tres archivos ya existe (no deja archivos a medias). Las
+`init` también escribe un `.env` (con permisos 600) para la clave del origen; ver [La clave (`.env`)](#la-clave-env).
+`init` se niega a tocar nada si alguno de los cuatro archivos ya existe (no deja archivos a medias). Las
 plantillas viven en `templates/*.dist` y van embebidas en el binario, así que `init` funciona en cualquier
 servidor sin copiar nada más.
  Se le pasa solo `config.yaml` (`-c`), y este apunta a los
@@ -77,7 +139,7 @@ otros dos. Cada uno cambia por una razón distinta:
 version: 1
 engine: mysql                 # mysql | mariadb | postgres. Un proyecto = un motor; los patrones van en su SQL
 
-source:                       # la clave va en DBANONDUMP_SOURCE_PASSWORD (cambiable con password_env)
+source:                       # la clave va en .env como DBANONDUMP_SOURCE_PASSWORD (cambiable con password_env)
   host: replica.internal
   port: 3306                  # por defecto 3306 (5432 en postgres)
   user: readonly
@@ -221,7 +283,9 @@ Docker para levantar la base temporal, así que los binarios bastan.
 cmd/dbanondump/      CLI (run, check, validate, init)
 internal/config/     carga y valida los 3 YAML
 internal/scaffold/   `init`: escribe los archivos de partida
-templates/           las 3 plantillas *.dist (embebidas en el binario)
+internal/runlog/     un archivo de log por ejecución, con errores y tiempos
+internal/envfile/    carga las capas .env, .env.local, .env.<APP_ENV> al entorno del proceso
+templates/           las plantillas *.dist y .env.dist (embebidas en el binario)
 internal/pattern/    "texto {expr}" -> SQL
 internal/engine/     interfaz Dialect + MySQL, MariaDB y PostgreSQL
 internal/plan/       arma el UPDATE, el check y la auditoría por tabla

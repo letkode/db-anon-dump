@@ -1,6 +1,6 @@
 # config.yaml -- main settings of dbanondump.
 #
-#   cp config.yaml.dist config.yaml         (and the same for columns.yaml.dist / functions.yaml.dist)
+#   dbanondump init                         (writes config.yaml, columns.yaml, functions.yaml and .env)
 #   dbanondump validate -c config.yaml      # offline lint of the three files
 #   dbanondump check    -c config.yaml      # validate against the real structure, list unreviewed columns
 #   dbanondump run      -c config.yaml      # extract, anonymise, write the dump
@@ -13,8 +13,9 @@ version: 1
 engine: mysql               # mysql | mariadb | postgres
 
 # Where the data comes from. Use a READ-ONLY account, ideally on a replica: the tool only reads.
-# The password is NEVER written here: export it before running
-#     export DBANONDUMP_SOURCE_PASSWORD='...'
+# The password is NEVER written here: put it in the .env file next to this one (written by `dbanondump init`)
+#     DBANONDUMP_SOURCE_PASSWORD='...'
+# or export it as an environment variable (a variable already exported wins over the .env files).
 source:
   host: replica.internal
   port: 3306                # default: 3306 (5432 for postgres)
@@ -36,6 +37,13 @@ temp:
 #   {date}     -> 2026-11-18
 #   {datetime} -> 20261118-153045
 output: output/dev-dump-{date}.sql.gz
+
+# Run log: one file per `run` / `check`, logs/<command>-<datetime>.log, with everything printed on screen
+# (with the time), the error if it fails, and a summary with the total duration and the time of each phase.
+# It can quote fragments of real data in SQL errors, so it is created with mode 0600 and logs/ is in .gitignore.
+# logs:
+#   dir: logs               # relative to this file; "" = do not write logs (default: logs)
+#   keep: 30                # keep only the newest N log files (default 0 = keep all)
 
 # Which tables to extract. A spec is a name, a glob (user_*) or * for all. Excludes always win.
 tables:

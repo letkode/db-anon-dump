@@ -1,10 +1,16 @@
 dist/
 output/
+# run logs: error messages can quote real data
+logs/
 *.sql.gz
 # local copies of the *.dist templates (they hold your own connection settings)
 /config.yaml
 /columns.yaml
 /functions.yaml
+# secrets: never commit a real .env, .env.local, .env.<env>... (the template is templates/.env.dist)
+.env
+.env.*
+!.env.dist
 
 # project-specific examples (LabLab config): kept out of the repository
 examples/
