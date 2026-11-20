@@ -2,6 +2,7 @@ package engine
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	_ "github.com/jackc/pgx/v5/stdlib" // registers the "pgx" database/sql driver
@@ -60,7 +61,9 @@ func (Postgres) CharLength(expr string) string { return "CHAR_LENGTH((" + expr +
 // RelaxConstraints needs a superuser (the temporary database always has one).
 func (Postgres) RelaxConstraints() string { return "SET session_replication_role = replica" }
 
-func (p Postgres) DropTableSQL(name string) string { return "DROP TABLE " + p.QuoteIdent(name) + " CASCADE" }
+func (p Postgres) DropTableSQL(name string) string {
+	return "DROP TABLE " + p.QuoteIdent(name) + " CASCADE"
+}
 
 // DropFunctionSQL fails if the name has several overloads; use CREATE OR REPLACE-style unique names.
 func (Postgres) DropFunctionSQL(name string) string { return "DROP FUNCTION IF EXISTS " + name }
@@ -70,12 +73,33 @@ func (Postgres) IsString(dt string) bool {
 	return dt == "character varying" || dt == "character"
 }
 
+var postgresFreeText = []string{"text", "json", "jsonb", "xml"}
+
+func (Postgres) FreeTextTypes() []string { return postgresFreeText }
+
 func (Postgres) IsFreeText(dt string) bool {
-	switch strings.ToLower(dt) {
-	case "text", "json", "jsonb", "xml":
-		return true
+	dt = strings.ToLower(dt)
+	for _, t := range postgresFreeText {
+		if t == dt {
+			return true
+		}
 	}
 	return false
+}
+
+// pg_dump writes "CREATE TABLE public.t (" (structure) and "COPY public.t (cols) FROM stdin;" (data).
+var postgresMarker = regexp.MustCompile(`(?m)^(?:CREATE TABLE|COPY) (?:public\.)?"?([A-Za-z0-9_]+)"?`)
+
+func (Postgres) StreamMarker() *regexp.Regexp { return postgresMarker }
+
+func (p Postgres) TableSizesSQL(_ string, tables []string) string {
+	qs := make([]string, len(tables))
+	for i, t := range tables {
+		qs[i] = p.QuoteString(t)
+	}
+	return "SELECT c.relname::text, pg_total_relation_size(c.oid)::bigint FROM pg_class c " +
+		"JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind = 'r' " +
+		"AND c.relname IN (" + strings.Join(qs, ", ") + ")"
 }
 
 func (p Postgres) ListTablesSQL(string) string {

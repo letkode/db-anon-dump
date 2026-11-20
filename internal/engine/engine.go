@@ -5,6 +5,7 @@ package engine
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -34,7 +35,7 @@ type Dialect interface {
 	// --- SQL generation ---
 	QuoteIdent(name string) string
 	QuoteString(s string) string
-	NotSame(col, expr string) string // true when col differs from expr (NULL-safe)
+	NotSame(col, expr string) string  // true when col differs from expr (NULL-safe)
 	NullCase(col, expr string) string // expr, but NULL stays NULL
 	NotNullDefault(dataType string) string
 	ParkValue(idCol string) string // a unique placeholder derived from the id column
@@ -42,12 +43,15 @@ type Dialect interface {
 	RelaxConstraints() string // statement that disables foreign keys for the session
 	DropTableSQL(name string) string
 	DropFunctionSQL(name string) string // name is validated as a plain identifier by the config
-	IsString(dataType string) bool   // fixed/variable length character types (parkable, length-checked)
-	IsFreeText(dataType string) bool // text/JSON types: audited because they may hold anything
+	IsString(dataType string) bool      // fixed/variable length character types (parkable, length-checked)
+	IsFreeText(dataType string) bool    // text/JSON types: audited because they may hold anything
+	FreeTextTypes() []string            // the data types IsFreeText accepts (the default of audit.types)
 
 	// --- introspection ---
 	ListTablesSQL(database string) string
 	ColumnsSQL(database string, tables []string) string
+	// TableSizesSQL returns (table, approximate size in bytes) rows; used only to show a progress percentage.
+	TableSizesSQL(database string, tables []string) string
 
 	// --- connection ---
 	DriverName() string
@@ -63,6 +67,9 @@ type Dialect interface {
 	ClientCmd(database string) []string
 	SourceDumpCmd(host string, port int, user, database string, tables []string, mode DumpMode) []string
 	LocalDumpCmd(database string, tables []string) []string
+	// StreamMarker matches, at the start of a line of SourceDumpCmd's output, the statement that begins a
+	// table; group 1 is the table name. It only drives the progress display.
+	StreamMarker() *regexp.Regexp
 }
 
 // Get returns the dialect for the engine name used in the config file.

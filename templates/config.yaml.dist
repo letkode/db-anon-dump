@@ -34,9 +34,9 @@ temp:
   # extra_args: ["--innodb-buffer-pool-size=2G"]
 
 # Where the dump is written. A ".gz" suffix compresses it.
+#   {datetime} -> 20261118-153045   (so two runs on the same day never overwrite each other)
 #   {date}     -> 2026-11-18
-#   {datetime} -> 20261118-153045
-output: output/dev-dump-{date}.sql.gz
+output: output/dev-dump-{datetime}.sql.gz
 
 # Run log: one file per `run` / `check`, logs/<command>-<datetime>.log, with everything printed on screen
 # (with the time), the error if it fails, and a summary with the total duration and the time of each phase.
@@ -45,10 +45,48 @@ output: output/dev-dump-{date}.sql.gz
 #   dir: logs               # relative to this file; "" = do not write logs (default: logs)
 #   keep: 30                # keep only the newest N log files (default 0 = keep all)
 
+# Audit: which columns `check` and `run` report as "looks personal" when columns.yaml gives them no pattern.
+# This section REPLACES the built-in lists, so it is shown here in full: translate it, add your own column
+# names, remove what does not apply. Delete the whole section to use the built-in lists.
+audit:
+  names:                   # case-insensitive regular expressions, matched against the COLUMN name
+    - mail
+    - phone
+    - fono
+    - celular
+    - rut
+    - dni
+    - passport
+    - pasaporte
+    - name
+    - nombre
+    - apellido
+    - address
+    - direccion
+    - birth
+    - nacimiento
+    - ^ip$
+    - ip_address
+    - token
+    - password
+    - secret
+    - salt
+    - linkedin
+    - identification
+  types:                   # data types (as the database reports them) that may hold anything
+    - json
+    - longtext
+    - mediumtext
+    - text
+    - tinytext
+
 # Which tables to extract. A spec is a name, a glob (user_*) or * for all. Excludes always win.
 tables:
   include: ["*"]
-  exclude: [mail_log, audit_*]
+  exclude: [mail_log, audit_*]      # NOT in the dump at all (not even the structure)
+  # schema_only: [job_queue, app_request]   # in the dump with their structure, but WITHOUT rows
+  #                                         # [] or absent = every table carries its data; ["*"] = structure only
+  #                                         # (also: --schema-only 'job_queue,app_*' on the command line, added to this list)
 
 # The other two files. Both are optional here: the defaults are the files below, next to this one
 # (columns.yaml must exist; functions.yaml is used only if it exists).

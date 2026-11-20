@@ -7,6 +7,8 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
+	"log"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -14,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	mysqldriver "github.com/go-sql-driver/mysql"
 	"github.com/letkode/db-anon-dump/internal/config"
 	"github.com/letkode/db-anon-dump/internal/pipeline"
 	"github.com/letkode/db-anon-dump/internal/runlog"
@@ -42,11 +45,18 @@ run / check flags:
   -t, --tables LIST     comma-separated table specs, overrides tables.include ('!name' excludes)
   -x, --exclude LIST    comma-separated tables/globs to exclude (added to the config)
       --from-dump FILE  import this dump (.sql / .sql.gz) instead of reading the source
+      --schema-only LIST comma-separated table specs dumped with their structure only (no rows); added to
+                        tables.schema_only. '*' = every table: a structure-only dump (quote it: '*')
       --strict          exit 3 if a personal-looking column has no pattern
       --log-dir DIR     folder for the run log (default: logs/ next to config.yaml, see logs: in config.yaml)
       --no-log          do not write a run log
+      --verbose         extra detail (container, tables, timings) and the database driver's own messages
+
+check flags:
+      --suggest         write columns.suggested.yaml: every flagged column with a commented-out suggestion
 
 run flags:
+      --allow-empty     allow a columns.yaml with no rule (the dump then keeps the real data)
   -o, --output FILE     output dump; '.gz' compresses it; {date} / {datetime} are expanded
                         (default: output in config.yaml)
       --parallel N      tables anonymised at the same time (default min(4, CPUs))
@@ -87,9 +97,10 @@ func run(args []string) int {
 	fs.SetOutput(os.Stderr)
 	fs.Usage = func() { fmt.Fprint(os.Stderr, usage) }
 	var (
-		cfgPath, tables, exclude, fromDump, output, logDir string
-		parallel                                           int
-		strict, keep, noLog                                bool
+		cfgPath, tables, exclude, fromDump, output, logDir    string
+		schemaOnly                                            string
+		parallel                                              int
+		strict, keep, noLog, verbose, suggestCols, allowEmpty bool
 	)
 	for _, n := range []string{"c", "config"} {
 		fs.StringVar(&cfgPath, n, "config.yaml", "config file")
@@ -102,11 +113,17 @@ func run(args []string) int {
 			fs.StringVar(&exclude, n, "", "excluded tables")
 		}
 		fs.StringVar(&fromDump, "from-dump", "", "dump file")
+		fs.StringVar(&schemaOnly, "schema-only", "", "tables dumped with structure only")
 		fs.BoolVar(&strict, "strict", false, "fail on unreviewed columns")
 		fs.StringVar(&logDir, "log-dir", "", "folder for the run log")
 		fs.BoolVar(&noLog, "no-log", false, "do not write a run log")
+		fs.BoolVar(&verbose, "verbose", false, "extra detail and the database driver's own messages")
+	}
+	if cmd == "check" {
+		fs.BoolVar(&suggestCols, "suggest", false, "write columns.suggested.yaml from the audit")
 	}
 	if cmd == "run" {
+		fs.BoolVar(&allowEmpty, "allow-empty", false, "allow a columns.yaml with no rule")
 		for _, n := range []string{"o", "output"} {
 			fs.StringVar(&output, n, "", "output file")
 		}
@@ -130,12 +147,19 @@ func run(args []string) int {
 			logf("ERROR: %v", err)
 			return exitCode(err)
 		}
+		for _, w := range cfg.Warnings() {
+			logf("WARNING: %s", w)
+		}
 		logf("%s is valid (engine: %s, %d table(s) with patterns, %d function(s))", cfgPath, cfg.Engine, len(cfg.Rules), len(cfg.Funcs))
 		return 0
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	if !verbose { // the driver logs every failed connection attempt while the temporary database boots
+		_ = mysqldriver.SetLogger(log.New(io.Discard, "", 0))
+	}
 
 	// run log: logs/<command>-<datetime>.log with everything printed here, the error and the durations
 	lg := logf
@@ -161,6 +185,7 @@ func run(args []string) int {
 	opts := pipeline.Options{
 		Tables: split(tables), Exclude: split(exclude), FromDump: fromDump, Output: output,
 		Parallel: parallel, Keep: keep, Strict: strict, CheckOnly: cmd == "check", Log: lg, Phase: rl.Phase,
+		Verbose: verbose, Suggest: suggestCols, AllowEmpty: allowEmpty, SchemaOnly: split(schemaOnly),
 	}
 	code := 0
 	runErr := pipeline.Run(ctx, cfg, opts)

@@ -2,6 +2,7 @@ package engine
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	_ "github.com/go-sql-driver/mysql" // registers the "mysql" database/sql driver
@@ -58,12 +59,33 @@ func (MySQL) IsString(dt string) bool {
 	return dt == "varchar" || dt == "char"
 }
 
+var mysqlFreeText = []string{"json", "longtext", "mediumtext", "text", "tinytext"}
+
+func (MySQL) FreeTextTypes() []string { return mysqlFreeText }
+
 func (MySQL) IsFreeText(dt string) bool {
-	switch strings.ToLower(dt) {
-	case "json", "longtext", "mediumtext", "text", "tinytext":
-		return true
+	dt = strings.ToLower(dt)
+	for _, t := range mysqlFreeText {
+		if t == dt {
+			return true
+		}
 	}
 	return false
+}
+
+// mysqldump / mariadb-dump write "CREATE TABLE `t`" (structure) and "LOCK TABLES `t` WRITE" (data).
+var mysqlMarker = regexp.MustCompile("(?m)^(?:CREATE TABLE|LOCK TABLES) `([^`]+)`")
+
+func (MySQL) StreamMarker() *regexp.Regexp { return mysqlMarker }
+
+func (m MySQL) TableSizesSQL(db string, tables []string) string {
+	qs := make([]string, len(tables))
+	for i, t := range tables {
+		qs[i] = m.QuoteString(t)
+	}
+	return "SELECT table_name, CAST(COALESCE(data_length, 0) + COALESCE(index_length, 0) AS SIGNED) " +
+		"FROM information_schema.tables WHERE table_schema = " + m.QuoteString(db) +
+		" AND table_name IN (" + strings.Join(qs, ", ") + ")"
 }
 
 func (m MySQL) ListTablesSQL(db string) string {

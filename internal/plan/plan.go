@@ -3,7 +3,6 @@ package plan
 
 import (
 	"fmt"
-	"regexp"
 	"sort"
 	"strings"
 
@@ -28,17 +27,26 @@ type TablePlan struct {
 	d     engine.Dialect
 }
 
+// AuditCol is a column that looks personal but has no pattern.
+type AuditCol struct {
+	Table, Column, DataType string
+	CharMax                 int  // character limit, 0 when it is not a string
+	Nullable                bool // the column accepts NULL
+	HasID                   bool // the table has an `id` column (patterns can use it)
+}
+
+// String is "table.column (type)".
+func (a AuditCol) String() string { return fmt.Sprintf("%s.%s (%s)", a.Table, a.Column, a.DataType) }
+
 // Plan is the result for all extracted tables.
 type Plan struct {
 	Tables []*TablePlan
-	Audit  []string // "table.column (type)" that look personal but have no pattern
+	Audit  []AuditCol // columns that look personal but have no pattern, per the audit settings
 }
-
-var auditName = regexp.MustCompile(`(?i)(mail|phone|fono|celular|rut|dni|passport|pasaporte|name|nombre|apellido|address|direccion|birth|nacimiento|^ip$|ip_address|token|password|secret|salt|linkedin|identification)`)
 
 // Build resolves, for each table in order, the pattern of each column: an exact table entry wins over the
 // "*" wildcard. All problems are returned together. meta holds the columns of every extracted table.
-func Build(d engine.Dialect, order []string, meta map[string][]engine.Column, rules map[string]map[string]config.Rule) (*Plan, []error) {
+func Build(d engine.Dialect, aud *config.AuditMatcher, order []string, meta map[string][]engine.Column, rules map[string]map[string]config.Rule) (*Plan, []error) {
 	var errs []error
 	p := &Plan{}
 	inSet := map[string]bool{}
@@ -86,8 +94,9 @@ func Build(d engine.Dialect, order []string, meta map[string][]engine.Column, ru
 				rule, ok = rules["*"][col.Name]
 			}
 			if !ok {
-				if d.IsFreeText(col.DataType) || auditName.MatchString(col.Name) {
-					p.Audit = append(p.Audit, fmt.Sprintf("%s.%s (%s)", t, col.Name, col.DataType))
+				if aud.Looks(col.Name, col.DataType) {
+					p.Audit = append(p.Audit, AuditCol{Table: t, Column: col.Name, DataType: col.DataType,
+						CharMax: col.CharMax, Nullable: col.Nullable, HasID: hasID})
 				}
 				continue
 			}

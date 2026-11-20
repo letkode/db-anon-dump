@@ -1,6 +1,7 @@
 package config
 
 import (
+	"github.com/letkode/db-anon-dump/internal/engine"
 	"os"
 	"path/filepath"
 	"strings"
@@ -127,14 +128,31 @@ func TestUnsupportedEngineIsReported(t *testing.T) {
 	}
 }
 
-func TestEmptyColumnsIsAnError(t *testing.T) {
+func TestEmptyColumnsIsAWarningNotAnError(t *testing.T) {
 	c, err := Load(project(t, map[string]string{"config.yaml": goodConfig, "columns.yaml": "# nothing yet\n"}))
 	if err != nil {
 		t.Fatal(err)
 	}
+	if errs := c.Validate(); len(errs) != 0 {
+		t.Errorf("an empty columns.yaml must validate, got %v", errs)
+	}
+	if w := c.Warnings(); len(w) != 1 || !strings.Contains(w[0], "no column to anonymise") {
+		t.Errorf("warnings: %v", w)
+	}
+}
+
+func TestAuditSection(t *testing.T) {
+	cfg := goodConfig + "audit:\n  names: [\"^correo$\", \"(\"]\n  types: [text]\n"
+	c, err := Load(project(t, map[string]string{"config.yaml": cfg, "columns.yaml": "user:\n  email: \"x{id}\"\n"}))
+	if err != nil {
+		t.Fatal(err)
+	}
 	errs := c.Validate()
-	if len(errs) != 1 || !strings.Contains(errs[0].Error(), "no column to anonymise") {
-		t.Errorf("got %v", errs)
+	if len(errs) != 1 || !strings.Contains(errs[0].Error(), "audit: names") {
+		t.Errorf("an invalid regular expression must be reported, got %v", errs)
+	}
+	if _, err := c.Auditor(engine.MySQL{}); err == nil {
+		t.Error("Auditor must reject the invalid expression")
 	}
 }
 
@@ -151,7 +169,7 @@ func TestOutputPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 11, 18, 15, 30, 45, 0, time.UTC)
-	if got := c.OutputPath("", now); got != filepath.Join(c.Dir, "output/dev-dump-2026-11-18.sql.gz") {
+	if got := c.OutputPath("", now); got != filepath.Join(c.Dir, "output/dev-dump-20261118-153045.sql.gz") {
 		t.Errorf("default output = %s", got)
 	}
 	if got := c.OutputPath("/tmp/x-{datetime}.sql", now); got != "/tmp/x-20261118-153045.sql" {
@@ -190,5 +208,60 @@ func TestLogDir(t *testing.T) {
 	c.Logs.Dir = &off
 	if got := c.LogDir(); got != "" {
 		t.Errorf("an explicit empty dir disables the log, got %q", got)
+	}
+}
+
+func TestMatchTablesAndSchemaOutput(t *testing.T) {
+	all := []string{"user", "mail", "mail_log", "audit_x"}
+	got := MatchTables(all, []string{"mail*", "user"})
+	if !got["user"] || !got["mail"] || !got["mail_log"] || got["audit_x"] || len(got) != 3 {
+		t.Errorf("got %v", got)
+	}
+	if n := len(MatchTables(all, []string{"*"})); n != 4 {
+		t.Errorf("* must match everything, got %d", n)
+	}
+	if n := len(MatchTables(all, nil)); n != 0 {
+		t.Errorf("no specs = no table, got %d", n)
+	}
+	for in, want := range map[string]string{
+		"output/d-20261118-153045.sql.gz": "output/d-20261118-153045-schema.sql.gz",
+		"/tmp/x.sql":                      "/tmp/x-schema.sql",
+		"dump":                            "dump-schema",
+	} {
+		if got := SchemaOutput(in); got != want {
+			t.Errorf("SchemaOutput(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestSchemaOnlySpecsAreValidated(t *testing.T) {
+	cfg := goodConfig + "  schema_only: [mail_*, \"!bad\", \"x y\"]\n"
+	c, err := Load(project(t, map[string]string{"config.yaml": cfg, "columns.yaml": goodColumns}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, e := range c.Validate() {
+		if strings.Contains(e.Error(), "schema_only") {
+			n++
+		}
+	}
+	if n != 2 {
+		t.Errorf("expected 2 invalid schema_only specs, got %d", n)
+	}
+}
+
+func TestColumnNamesMayContainSpaces(t *testing.T) {
+	cols := "contacts:\n  \"Apellido Paterno\": \"Apellido{id}\"\n  \"bad\\tname\": \"x\"\n"
+	c, err := Load(project(t, map[string]string{"config.yaml": goodConfig, "columns.yaml": cols}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var bad []string
+	for _, e := range c.Validate() {
+		bad = append(bad, e.Error())
+	}
+	if len(bad) != 1 || !strings.Contains(bad[0], "invalid column name") {
+		t.Errorf("only the control-character name must be refused, got %v", bad)
 	}
 }

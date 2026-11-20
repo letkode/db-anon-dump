@@ -13,6 +13,23 @@ jobs:
       - run: make vet
       - run: make test
 
+  # macOS runners have no Docker, so this cannot run the program end to end. It proves that the darwin
+  # binary builds, starts, and validates a freshly generated project, and that the unit tests pass on macOS.
+  smoke-macos:
+    needs: unit
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+      - run: go test ./...
+      - run: CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=ci" -o dbanondump ./cmd/dbanondump
+      - run: file dbanondump && ./dbanondump version
+      - run: |
+          ./dbanondump init "$RUNNER_TEMP/project"
+          ./dbanondump validate -c "$RUNNER_TEMP/project/config.yaml"
+
   e2e:
     needs: unit
     runs-on: ubuntu-latest

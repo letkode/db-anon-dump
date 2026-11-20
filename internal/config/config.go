@@ -82,9 +82,69 @@ type Logs struct {
 	Keep int     `yaml:"keep"` // newest log files to keep; 0 keeps all
 }
 
+// Audit tells `check` / `run` which columns "look personal" and have no pattern. When the section exists it
+// REPLACES the built-in lists completely (so it also works for databases whose names are not in English).
+//
+//	names: case-insensitive regular expressions matched against the column name
+//	types: data types (as the database reports them) that may hold anything, e.g. text or JSON
+type Audit struct {
+	Names []string `yaml:"names"`
+	Types []string `yaml:"types"`
+}
+
+// DefaultAuditNames is the built-in list of column-name patterns used when config.yaml has no `audit:`.
+// templates/config.yaml.dist repeats it; a test keeps both in sync.
+var DefaultAuditNames = []string{
+	"mail", "phone", "fono", "celular", "rut", "dni", "passport", "pasaporte", "name", "nombre", "apellido",
+	"address", "direccion", "birth", "nacimiento", "^ip$", "ip_address", "token", "password", "secret", "salt",
+	"linkedin", "identification",
+}
+
+// AuditMatcher decides whether a column deserves a warning.
+type AuditMatcher struct {
+	names []*regexp.Regexp
+	types map[string]bool
+}
+
+// Looks reports whether a column with this name and data type looks personal.
+func (a *AuditMatcher) Looks(name, dataType string) bool {
+	if a.types[strings.ToLower(dataType)] {
+		return true
+	}
+	for _, re := range a.names {
+		if re.MatchString(name) {
+			return true
+		}
+	}
+	return false
+}
+
+// Auditor builds the matcher from `audit:` (or the defaults of the engine d when it is absent).
+func (c *Config) Auditor(d engine.Dialect) (*AuditMatcher, error) {
+	names, types := DefaultAuditNames, d.FreeTextTypes()
+	if c.Audit != nil {
+		names, types = c.Audit.Names, c.Audit.Types
+	}
+	a := &AuditMatcher{types: map[string]bool{}}
+	for _, n := range names {
+		re, err := regexp.Compile("(?i)" + n)
+		if err != nil {
+			return nil, fmt.Errorf("config: audit: names: %q is not a valid regular expression: %v", n, err)
+		}
+		a.names = append(a.names, re)
+	}
+	for _, t := range types {
+		a.types[strings.ToLower(strings.TrimSpace(t))] = true
+	}
+	return a, nil
+}
+
 type Tables struct {
 	Include []string `yaml:"include"`
 	Exclude []string `yaml:"exclude"`
+	// SchemaOnly lists tables (names, globs, "*" for all) that are dumped with their structure but WITHOUT
+	// rows. Excludes still win: an excluded table is not in the dump at all.
+	SchemaOnly []string `yaml:"schema_only"`
 }
 
 // Config is config.yaml plus the contents of the two files it points to.
@@ -96,6 +156,7 @@ type Config struct {
 	Output    string `yaml:"output"`
 	Tables    Tables `yaml:"tables"`
 	Logs      Logs   `yaml:"logs"`
+	Audit     *Audit `yaml:"audit"`
 	Columns   string `yaml:"columns"`   // path to columns.yaml (default: columns.yaml next to config.yaml)
 	Functions string `yaml:"functions"` // path to functions.yaml (default: functions.yaml next to config.yaml, optional)
 
@@ -110,12 +171,15 @@ type Config struct {
 
 var tableSpecRe = regexp.MustCompile(`^!?[A-Za-z0-9_*?]+$`)
 var identRe = regexp.MustCompile(`^(\*|[A-Za-z0-9_$]+)$`)
-var colRe = regexp.MustCompile(`^[A-Za-z0-9_$]+$`)
+
+// Column names may contain spaces and accents ("Apellido Paterno"): they are always quoted by the dialect,
+// so only control characters are refused.
+var colRe = regexp.MustCompile(`^[^\x00-\x1f]+$`)
 var funcNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 var placeholderRe = regexp.MustCompile(`\{([^}]*)\}`)
 
-// DefaultOutput names the dump after the day it was made.
-const DefaultOutput = "output/dev-dump-{date}.sql.gz"
+// DefaultOutput names the dump after the moment it was made, so two runs on the same day never collide.
+const DefaultOutput = "output/dev-dump-{datetime}.sql.gz"
 
 func decode(path string, strict bool, v any) error {
 	b, err := os.ReadFile(path)
@@ -185,6 +249,15 @@ func Load(path string) (*Config, error) {
 	return &c, nil
 }
 
+// Warnings are problems that do not stop validate / check, but that the person should read.
+func (c *Config) Warnings() []string {
+	var w []string
+	if len(c.Rules) == 0 {
+		w = append(w, fmt.Sprintf("%s has no column to anonymise: a dump made now would contain the data as is", filepath.Base(c.ColumnsPath)))
+	}
+	return w
+}
+
 // DefaultLogDir is where the run logs go when logs.dir is not set.
 const DefaultLogDir = "logs"
 
@@ -250,6 +323,11 @@ func (c *Config) Validate() []error {
 			add("config: tables: invalid table spec %q (use a name, a glob with * or ?, or * for all)", s)
 		}
 	}
+	for _, s := range c.Tables.SchemaOnly {
+		if !tableSpecRe.MatchString(s) || strings.HasPrefix(s, "!") {
+			add("config: tables: schema_only: invalid table spec %q (use a name, a glob with * or ?, or * for all)", s)
+		}
+	}
 	if len(c.Tables.Include) == 0 {
 		add("config: tables.include: at least one table spec is required (use \"*\" for all)")
 	}
@@ -259,8 +337,12 @@ func (c *Config) Validate() []error {
 		}
 	}
 
-	if len(c.Rules) == 0 {
-		add("%s: no column to anonymise: the dump would contain the data as is", colsFile)
+	if c.Audit != nil {
+		for _, n := range c.Audit.Names {
+			if _, err := regexp.Compile("(?i)" + n); err != nil {
+				add("config: audit: names: %q is not a valid regular expression: %v", n, err)
+			}
+		}
 	}
 	tables := make([]string, 0, len(c.Rules))
 	for t := range c.Rules {
@@ -338,6 +420,28 @@ func SelectTables(universe, include, exclude []string) ([]string, error) {
 		return nil, fmt.Errorf("the table specs match no table")
 	}
 	return out, nil
+}
+
+// MatchTables returns the tables that match any of the specs (names, globs, "*").
+func MatchTables(tables, specs []string) map[string]bool {
+	re := compile(specs)
+	out := map[string]bool{}
+	for _, t := range tables {
+		if matchAny(re, t) {
+			out[t] = true
+		}
+	}
+	return out
+}
+
+// SchemaOutput marks a dump file name as "structure only": dev-dump-X.sql.gz -> dev-dump-X-schema.sql.gz.
+func SchemaOutput(path string) string {
+	for _, ext := range []string{".sql.gz", ".sql"} {
+		if strings.HasSuffix(path, ext) {
+			return strings.TrimSuffix(path, ext) + "-schema" + ext
+		}
+	}
+	return path + "-schema"
 }
 
 func compile(specs []string) []*regexp.Regexp {

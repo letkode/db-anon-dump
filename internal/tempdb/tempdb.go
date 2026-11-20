@@ -41,7 +41,9 @@ func randomPassword(n int) (string, error) {
 	return string(b), nil
 }
 
-func docker(ctx context.Context, args ...string) *exec.Cmd { return exec.CommandContext(ctx, "docker", args...) }
+func docker(ctx context.Context, args ...string) *exec.Cmd {
+	return exec.CommandContext(ctx, "docker", args...)
+}
 
 // Start launches the container, publishing the database port on 127.0.0.1 only, with a random password.
 func Start(ctx context.Context, d engine.Dialect, image, database string, tmpfs bool, extra []string) (*Container, error) {
@@ -139,30 +141,43 @@ func (c *Container) Exec(ctx context.Context, stdin io.Reader, stdout io.Writer,
 
 // Pipe streams the output of srcCmd (run inside the container with srcSecret in its environment, e.g. a
 // dump of the source database) into dstCmd (run against the temporary database).
-func (c *Container) Pipe(ctx context.Context, srcSecret string, srcCmd, dstCmd []string) error {
+func (c *Container) Pipe(ctx context.Context, srcSecret string, srcCmd, dstCmd []string, so *StreamOptions) error {
 	var srcErr, dstErr bytes.Buffer
 	src := docker(ctx, c.execArgs(srcSecret, srcCmd)...)
 	dst := docker(ctx, c.execArgs(c.D.SecretEnv(c.Password), dstCmd)...)
-	pipe, err := src.StdoutPipe()
+	dstIn, err := dst.StdinPipe()
 	if err != nil {
 		return err
 	}
-	src.Stderr, dst.Stdin, dst.Stderr = &srcErr, pipe, &dstErr
+	var out io.Writer = dstIn
+	var m *meter
+	if so != nil {
+		m = newMeter(*so)
+		out = io.MultiWriter(dstIn, m)
+	}
+	src.Stdout, src.Stderr, dst.Stderr = out, &srcErr, &dstErr
 	if err := dst.Start(); err != nil {
 		return err
 	}
 	if err := src.Start(); err != nil {
+		dstIn.Close()
 		_ = dst.Process.Kill()
 		_ = dst.Wait()
 		return err
 	}
-	srcRun := src.Wait()
-	dstRun := dst.Wait()
-	if srcRun != nil {
-		return fmt.Errorf("%s: %v: %s", srcCmd[0], srcRun, tail(srcErr.String()))
+	stop := func() {}
+	if m != nil {
+		stop = m.startTicker()
 	}
-	if dstRun != nil {
+	srcRun := src.Wait()
+	dstIn.Close() // the receiver sees EOF once everything was copied
+	dstRun := dst.Wait()
+	stop()
+	switch {
+	case dstRun != nil && (srcRun == nil || strings.TrimSpace(srcErr.String()) == ""):
 		return fmt.Errorf("%s: %v: %s", dstCmd[0], dstRun, tail(dstErr.String()))
+	case srcRun != nil:
+		return fmt.Errorf("%s: %v: %s", srcCmd[0], srcRun, tail(srcErr.String()))
 	}
 	return nil
 }

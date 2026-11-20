@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/letkode/db-anon-dump/internal/config"
+	"github.com/letkode/db-anon-dump/internal/engine"
 )
 
 func TestWriteCreatesTheFilesAndTheyAreValid(t *testing.T) {
@@ -30,6 +31,11 @@ func TestWriteCreatesTheFilesAndTheyAreValid(t *testing.T) {
 	}
 	if errs := c.Validate(); len(errs) != 0 {
 		t.Fatalf("the templates do not validate: %v", errs)
+	}
+	// the audit lists in the template are the built-in ones (so the docs and the code cannot drift apart)
+	if c.Audit == nil || strings.Join(c.Audit.Names, "|") != strings.Join(config.DefaultAuditNames, "|") ||
+		strings.Join(c.Audit.Types, "|") != strings.Join(engine.MySQL{}.FreeTextTypes(), "|") {
+		t.Errorf("the audit section of config.yaml.dist differs from the built-in lists: %+v", c.Audit)
 	}
 	if len(c.Rules) == 0 || len(c.Funcs) == 0 {
 		t.Errorf("the templates must show examples of columns and functions: %d / %d", len(c.Rules), len(c.Funcs))

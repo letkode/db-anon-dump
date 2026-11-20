@@ -35,7 +35,7 @@ func rules() map[string]map[string]config.Rule {
 }
 
 func TestBuild(t *testing.T) {
-	p, errs := Build(engine.MySQL{}, []string{"user", "city"}, meta(), rules())
+	p, errs := Build(engine.MySQL{}, auditor(t, nil), []string{"user", "city"}, meta(), rules())
 	if len(errs) != 0 {
 		t.Fatal(errs)
 	}
@@ -46,8 +46,8 @@ func TestBuild(t *testing.T) {
 	upd := tp.UpdateSQL()
 	for _, want := range []string{
 		"`email` = CASE WHEN `email` IS NULL THEN NULL ELSE CONCAT('user-', id, '@example.test') END", // nullable keeps NULL
-		"`notes` = ''",                      // NOT NULL text -> type default
-		"`meta` = CAST('{}' AS JSON)",       // NOT NULL json -> '{}'
+		"`notes` = ''",                       // NOT NULL text -> type default
+		"`meta` = CAST('{}' AS JSON)",        // NOT NULL json -> '{}'
 		"`firstname` = CONCAT('Nombre', id)", // NOT NULL: no wrapper
 	} {
 		if !strings.Contains(upd, want) {
@@ -64,15 +64,55 @@ func TestBuild(t *testing.T) {
 		t.Errorf("CheckSQL: %s", tp.CheckSQL())
 	}
 	// audit: ip_address looks personal and has no pattern; city.name is {KEEP}-ed by the wildcard
-	if strings.Join(p.Audit, ",") != "user.ip_address (varchar)" {
+	if len(p.Audit) != 1 || p.Audit[0].String() != "user.ip_address (varchar)" || !p.Audit[0].HasID {
 		t.Errorf("audit: %v", p.Audit)
+	}
+}
+
+func auditor(t *testing.T, a *config.Audit) *config.AuditMatcher {
+	t.Helper()
+	m, err := (&config.Config{Audit: a}).Auditor(engine.MySQL{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
+func TestAuditIsDefinedByTheConfig(t *testing.T) {
+	m := map[string][]engine.Column{"t": {
+		{Table: "t", Name: "id", DataType: "int"},
+		{Table: "t", Name: "email", DataType: "varchar", CharMax: 50},
+		{Table: "t", Name: "correo", DataType: "varchar", CharMax: 50},
+		{Table: "t", Name: "notes", DataType: "longtext"},
+		{Table: "t", Name: "city", DataType: "varchar", CharMax: 20},
+	}}
+	names := func(p *Plan) string {
+		var n []string
+		for _, a := range p.Audit {
+			n = append(n, a.Column)
+		}
+		return strings.Join(n, ",")
+	}
+	// built-in lists: email (name) and notes (type); the Spanish "correo" is not known
+	p, _ := Build(engine.MySQL{}, auditor(t, nil), []string{"t"}, m, nil)
+	if got := names(p); got != "email,notes" {
+		t.Errorf("defaults: %s", got)
+	}
+	// the section replaces the lists completely: only what it names is audited
+	p, _ = Build(engine.MySQL{}, auditor(t, &config.Audit{Names: []string{"^correo$", "ciudad|city"}}), []string{"t"}, m, nil)
+	if got := names(p); got != "correo,city" {
+		t.Errorf("custom names, no types: %s", got)
+	}
+	p, _ = Build(engine.MySQL{}, auditor(t, &config.Audit{Types: []string{"LongText"}}), []string{"t"}, m, nil)
+	if got := names(p); got != "notes" {
+		t.Errorf("custom types: %s", got)
 	}
 }
 
 func TestExactEntryBeatsWildcard(t *testing.T) {
 	r := rules()
 	r["*"]["firstname"] = config.Rule{Pattern: "wild{id}"}
-	p, errs := Build(engine.MySQL{}, []string{"user"}, meta(), r)
+	p, errs := Build(engine.MySQL{}, auditor(t, nil), []string{"user"}, meta(), r)
 	if len(errs) != 0 {
 		t.Fatal(errs)
 	}
@@ -86,7 +126,7 @@ func TestErrorsAreAggregated(t *testing.T) {
 	r["user"]["no_such"] = config.Rule{Pattern: "{NULL}"}
 	r["user"]["legacy"] = config.Rule{Pattern: "{NULL}", Optional: true} // optional: silently skipped
 	r["user"]["firstname"] = config.Rule{Pattern: "bad{"}
-	_, errs := Build(engine.MySQL{}, []string{"user"}, meta(), r)
+	_, errs := Build(engine.MySQL{}, auditor(t, nil), []string{"user"}, meta(), r)
 	if len(errs) != 2 {
 		t.Fatalf("want 2 errors, got %v", errs)
 	}
@@ -94,7 +134,7 @@ func TestErrorsAreAggregated(t *testing.T) {
 
 func TestUniqueWithoutIDIsAnError(t *testing.T) {
 	m := map[string][]engine.Column{"t": {{Table: "t", Name: "code", DataType: "varchar", CharMax: 10, Unique: true}}}
-	_, errs := Build(engine.MySQL{}, []string{"t"}, m, map[string]map[string]config.Rule{"t": {"code": {Pattern: "x{1}"}}})
+	_, errs := Build(engine.MySQL{}, auditor(t, nil), []string{"t"}, m, map[string]map[string]config.Rule{"t": {"code": {Pattern: "x{1}"}}})
 	if len(errs) != 1 || !strings.Contains(errs[0].Error(), "no `id` column") {
 		t.Fatalf("got %v", errs)
 	}

@@ -17,4 +17,6 @@ jobs:
       - run: cd dist && sha256sum dbanondump-* > SHA256SUMS
       - env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${{ github.ref_name }}" dist/* --title "${{ github.ref_name }}" --generate-notes
+        run: |
+          gh release create "${{ github.ref_name }}" dist/* --title "${{ github.ref_name }}" --generate-notes \
+            --notes "linux-amd64 and linux-arm64: exercised end to end by the CI (MySQL, MariaDB and PostgreSQL). darwin-arm64: only built, started and validated on a macOS runner (no Docker there); it has not been run against a real database on macOS."
